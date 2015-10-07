@@ -8,6 +8,7 @@ package rpcbench;
 
 service Echo {
   rpc Echo (EchoRequest) returns (EchoResponse) {}
+  rpc EchoStream (stream EchoRequest) returns (stream EchoResponse) {}
 }
 
 message EchoRequest {

@@ -57,6 +57,7 @@ var _ grpc.ClientConn
 
 type EchoClient interface {
 	Echo(ctx context.Context, in *EchoRequest, opts ...grpc.CallOption) (*EchoResponse, error)
+	EchoStream(ctx context.Context, opts ...grpc.CallOption) (Echo_EchoStreamClient, error)
 }
 
 type echoClient struct {
@@ -76,19 +77,51 @@ func (c *echoClient) Echo(ctx context.Context, in *EchoRequest, opts ...grpc.Cal
 	return out, nil
 }
 
+func (c *echoClient) EchoStream(ctx context.Context, opts ...grpc.CallOption) (Echo_EchoStreamClient, error) {
+	stream, err := grpc.NewClientStream(ctx, &_Echo_serviceDesc.Streams[0], c.cc, "/rpcbench.Echo/EchoStream", opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &echoEchoStreamClient{stream}
+	return x, nil
+}
+
+type Echo_EchoStreamClient interface {
+	Send(*EchoRequest) error
+	Recv() (*EchoResponse, error)
+	grpc.ClientStream
+}
+
+type echoEchoStreamClient struct {
+	grpc.ClientStream
+}
+
+func (x *echoEchoStreamClient) Send(m *EchoRequest) error {
+	return x.ClientStream.SendMsg(m)
+}
+
+func (x *echoEchoStreamClient) Recv() (*EchoResponse, error) {
+	m := new(EchoResponse)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // Server API for Echo service
 
 type EchoServer interface {
 	Echo(context.Context, *EchoRequest) (*EchoResponse, error)
+	EchoStream(Echo_EchoStreamServer) error
 }
 
 func RegisterEchoServer(s *grpc.Server, srv EchoServer) {
 	s.RegisterService(&_Echo_serviceDesc, srv)
 }
 
-func _Echo_Echo_Handler(srv interface{}, ctx context.Context, codec grpc.Codec, buf []byte) (interface{}, error) {
+func _Echo_Echo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error) (interface{}, error) {
 	in := new(EchoRequest)
-	if err := codec.Unmarshal(buf, in); err != nil {
+	if err := dec(in); err != nil {
 		return nil, err
 	}
 	out, err := srv.(EchoServer).Echo(ctx, in)
@@ -96,6 +129,32 @@ func _Echo_Echo_Handler(srv interface{}, ctx context.Context, codec grpc.Codec, 
 		return nil, err
 	}
 	return out, nil
+}
+
+func _Echo_EchoStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(EchoServer).EchoStream(&echoEchoStreamServer{stream})
+}
+
+type Echo_EchoStreamServer interface {
+	Send(*EchoResponse) error
+	Recv() (*EchoRequest, error)
+	grpc.ServerStream
+}
+
+type echoEchoStreamServer struct {
+	grpc.ServerStream
+}
+
+func (x *echoEchoStreamServer) Send(m *EchoResponse) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func (x *echoEchoStreamServer) Recv() (*EchoRequest, error) {
+	m := new(EchoRequest)
+	if err := x.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 var _Echo_serviceDesc = grpc.ServiceDesc{
@@ -107,7 +166,14 @@ var _Echo_serviceDesc = grpc.ServiceDesc{
 			Handler:    _Echo_Echo_Handler,
 		},
 	},
-	Streams: []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "EchoStream",
+			Handler:       _Echo_EchoStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
 }
 
 func (m *EchoRequest) Marshal() (data []byte, err error) {
@@ -222,8 +288,12 @@ func (m *EchoRequest) Unmarshal(data []byte) error {
 	l := len(data)
 	iNdEx := 0
 	for iNdEx < l {
+		preIndex := iNdEx
 		var wire uint64
 		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowEcho
+			}
 			if iNdEx >= l {
 				return io.ErrUnexpectedEOF
 			}
@@ -236,6 +306,12 @@ func (m *EchoRequest) Unmarshal(data []byte) error {
 		}
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: EchoRequest: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: EchoRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
@@ -243,6 +319,9 @@ func (m *EchoRequest) Unmarshal(data []byte) error {
 			}
 			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowEcho
+				}
 				if iNdEx >= l {
 					return io.ErrUnexpectedEOF
 				}
@@ -264,15 +343,7 @@ func (m *EchoRequest) Unmarshal(data []byte) error {
 			m.Msg = string(data[iNdEx:postIndex])
 			iNdEx = postIndex
 		default:
-			var sizeOfWire int
-			for {
-				sizeOfWire++
-				wire >>= 7
-				if wire == 0 {
-					break
-				}
-			}
-			iNdEx -= sizeOfWire
+			iNdEx = preIndex
 			skippy, err := skipEcho(data[iNdEx:])
 			if err != nil {
 				return err
@@ -287,14 +358,21 @@ func (m *EchoRequest) Unmarshal(data []byte) error {
 		}
 	}
 
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
 	return nil
 }
 func (m *EchoResponse) Unmarshal(data []byte) error {
 	l := len(data)
 	iNdEx := 0
 	for iNdEx < l {
+		preIndex := iNdEx
 		var wire uint64
 		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowEcho
+			}
 			if iNdEx >= l {
 				return io.ErrUnexpectedEOF
 			}
@@ -307,6 +385,12 @@ func (m *EchoResponse) Unmarshal(data []byte) error {
 		}
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: EchoResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: EchoResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
@@ -314,6 +398,9 @@ func (m *EchoResponse) Unmarshal(data []byte) error {
 			}
 			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowEcho
+				}
 				if iNdEx >= l {
 					return io.ErrUnexpectedEOF
 				}
@@ -335,15 +422,7 @@ func (m *EchoResponse) Unmarshal(data []byte) error {
 			m.Msg = string(data[iNdEx:postIndex])
 			iNdEx = postIndex
 		default:
-			var sizeOfWire int
-			for {
-				sizeOfWire++
-				wire >>= 7
-				if wire == 0 {
-					break
-				}
-			}
-			iNdEx -= sizeOfWire
+			iNdEx = preIndex
 			skippy, err := skipEcho(data[iNdEx:])
 			if err != nil {
 				return err
@@ -358,6 +437,9 @@ func (m *EchoResponse) Unmarshal(data []byte) error {
 		}
 	}
 
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
 	return nil
 }
 func skipEcho(data []byte) (n int, err error) {
@@ -366,6 +448,9 @@ func skipEcho(data []byte) (n int, err error) {
 	for iNdEx < l {
 		var wire uint64
 		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return 0, ErrIntOverflowEcho
+			}
 			if iNdEx >= l {
 				return 0, io.ErrUnexpectedEOF
 			}
@@ -379,7 +464,10 @@ func skipEcho(data []byte) (n int, err error) {
 		wireType := int(wire & 0x7)
 		switch wireType {
 		case 0:
-			for {
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return 0, ErrIntOverflowEcho
+				}
 				if iNdEx >= l {
 					return 0, io.ErrUnexpectedEOF
 				}
@@ -395,6 +483,9 @@ func skipEcho(data []byte) (n int, err error) {
 		case 2:
 			var length int
 			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return 0, ErrIntOverflowEcho
+				}
 				if iNdEx >= l {
 					return 0, io.ErrUnexpectedEOF
 				}
@@ -415,6 +506,9 @@ func skipEcho(data []byte) (n int, err error) {
 				var innerWire uint64
 				var start int = iNdEx
 				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return 0, ErrIntOverflowEcho
+					}
 					if iNdEx >= l {
 						return 0, io.ErrUnexpectedEOF
 					}
@@ -450,4 +544,5 @@ func skipEcho(data []byte) (n int, err error) {
 
 var (
 	ErrInvalidLengthEcho = fmt.Errorf("proto: negative length found during unmarshaling")
+	ErrIntOverflowEcho   = fmt.Errorf("proto: integer overflow")
 )

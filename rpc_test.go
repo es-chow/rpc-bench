@@ -113,6 +113,16 @@ func (e *echoServer) Echo(ctx context.Context, req *EchoRequest) (*EchoResponse,
 	return &EchoResponse{Msg: req.Msg}, nil
 }
 
+func (e *echoServer) EchoStream(s Echo_EchoStreamServer) error {
+	for {
+		req, err := s.Recv()
+		if err != nil {
+			return err
+		}
+		s.Send(&EchoResponse{Msg: req.Msg})
+	}
+}
+
 type benchGRPC struct{}
 
 func listenAndServeGRPC(listener net.Listener, _ *tls.Config) error {
@@ -148,12 +158,69 @@ func benchmarkEchoGRPC(b *testing.B, size int) {
 	)
 }
 
+func benchmarkEchoGRPCStream(b *testing.B, size int) {
+	var conn *grpc.ClientConn
+	var client EchoClient
+	streams := make(chan Echo_EchoStreamClient, 64)
+	benchmarkEcho(b, size, listenAndServeGRPC,
+		func(addr net.Addr) {
+			var err error
+			conn, err = grpc.Dial(addr.String(), grpc.WithTransportCredentials(credentials.NewTLS(clientTLSConfig)))
+			if err != nil {
+				b.Fatal(err)
+			}
+			client = NewEchoClient(conn)
+		},
+		func() {
+			if err := conn.Close(); err != nil {
+				b.Fatal(err)
+			}
+		},
+		func(echoMsg string) string {
+			var stream Echo_EchoStreamClient
+			select {
+			case stream = <-streams:
+			default:
+				var err error
+				stream, err = client.EchoStream(context.TODO())
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+
+			err := stream.Send(&EchoRequest{Msg: echoMsg})
+			if err != nil {
+				b.Fatal(err)
+			}
+			resp, err := stream.Recv()
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			streams <- stream
+			return resp.Msg
+		},
+	)
+}
+
 func BenchmarkGRPC_1K(b *testing.B) {
+	grpc.EnableTracing = false
 	benchmarkEchoGRPC(b, 1<<10)
 }
 
 func BenchmarkGRPC_64K(b *testing.B) {
+	grpc.EnableTracing = false
 	benchmarkEchoGRPC(b, 64<<10)
+}
+
+func BenchmarkGRPC_Stream_1K(b *testing.B) {
+	grpc.EnableTracing = false
+	benchmarkEchoGRPCStream(b, 1<<10)
+}
+
+func BenchmarkGRPC_Stream_64K(b *testing.B) {
+	grpc.EnableTracing = false
+	benchmarkEchoGRPCStream(b, 64<<10)
 }
 
 // gob-rpc
