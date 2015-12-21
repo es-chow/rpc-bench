@@ -31,6 +31,8 @@ import (
 	"strings"
 	"testing"
 
+	"git.apache.org/thrift.git/lib/go/thrift"
+	"github.com/cockroachdb/rpc-bench/gen-go/rpcbench"
 	"github.com/gogo/protobuf/proto"
 	"golang.org/x/net/context"
 	"golang.org/x/net/http2"
@@ -382,4 +384,110 @@ func BenchmarkProtoHTTP2_1K(b *testing.B) {
 
 func BenchmarkProtoHTTP2_64K(b *testing.B) {
 	benchmarkEchoProtoHTTP2(b, 64<<10)
+}
+
+// thrift
+type EchoHandler struct{}
+
+func (h *EchoHandler) Echo(e *rpcbench.EchoRequest) (r *rpcbench.EchoResponse, err error) {
+	return &rpcbench.EchoResponse{Msg: e.Msg}, nil
+}
+
+func echoAsync(argsI Messager, callback func(Messager, error)) {
+	args := argsI.(*rpcbench.EchoEchoArgs)
+	reply := rpcbench.NewEchoResponse()
+	reply.Msg = args.E.Msg
+	result := &rpcbench.EchoEchoResult{Success: reply}
+	callback(result, nil)
+}
+
+func echoSync(argsI Messager) (Messager, error) {
+	args := argsI.(*rpcbench.EchoEchoArgs)
+	return &rpcbench.EchoEchoResult{Success: &rpcbench.EchoResponse{Msg: args.E.Msg}}, nil
+}
+
+func listenAndServeThrift(listener net.Listener, tlsConfig *tls.Config) error {
+	transport, err := thrift.NewTSSLServerSocketListener(listener, tlsConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// handler := &EchoHandler{}
+	// processor := rpcbench.NewEchoProcessor(handler)
+	// protocolFactory := thrift.NewTBinaryProtocolFactory(true, true)
+	// transportFactory := thrift.NewTBufferedTransportFactory(1024 * 1024)
+	// server := thrift.NewTSimpleServer4(processor, transport, transportFactory, protocolFactory)
+	transportFactory := thrift.NewTBufferedTransportFactory(1024 * 1024)
+	protocolFactory := thrift.NewTBinaryProtocolFactoryDefault()
+	server := NewThriftServer(&Context{}, transport, transportFactory, protocolFactory)
+	server.Register("Echo", echoSync, &rpcbench.EchoEchoArgs{})
+	//server.RegisterAsync("Echo", false, echoAsync, &rpcbench.EchoEchoArgs{})
+
+	return server.Serve()
+}
+
+func benchmarkEchoThrift(b *testing.B, size int) {
+	var transport thrift.TTransport
+	var client *rpc.Client
+	benchmarkEcho(b, size, listenAndServeThrift,
+		func(addr net.Addr) {
+			var err error
+			protocolFactory := thrift.NewTBinaryProtocolFactoryDefault()
+			cfg := new(tls.Config)
+			cfg.InsecureSkipVerify = true
+			transport, err = thrift.NewTSSLSocket(addr.String(), cfg)
+			if err != nil {
+				b.Fatal("Error opening socket:", err)
+				return
+			}
+			if err = transport.Open(); err != nil {
+				b.Fatal("Error opening transport:", err)
+				return
+			}
+			client = rpc.NewClientWithCodec(NewThriftClientCodec(thrift.NewTBufferedTransport(transport, 1024*1024), protocolFactory))
+		},
+		func() {
+			client.Close()
+		},
+		func(echoMsg string) string {
+			// protocolFactory := thrift.NewTBinaryProtocolFactoryDefault()
+			// //			transport := transportFactory.GetTransport(transport)
+			// //			defer transport.Close()
+			// cfg := new(tls.Config)
+			// cfg.InsecureSkipVerify = true
+			// transport, err := thrift.NewTSSLSocket(peerAddr.String(), cfg)
+			// if err != nil {
+			// 	b.Fatal("Error opening socket:", err)
+			// }
+			// if err := transport.Open(); err != nil {
+			// 	b.Fatal("Error opening transport:", err)
+			// }
+			// defer transport.Close()
+			// client := rpcbench.NewEchoClientFactory(transport, protocolFactory)
+			//fmt.Printf("zzz, before send echo")
+			args := rpcbench.EchoEchoArgs{E: &rpcbench.EchoRequest{Msg: echoMsg}}
+			result := rpcbench.EchoEchoResult{}
+			if err := client.Call("Echo", &args, &result); err != nil {
+				b.Fatal(err)
+			}
+			// done := make(chan *rpc.Call, 10)
+			// go client.Go("Echo", args, result, done)
+			// select {
+			// case call := <-done:
+			// 	if call.Error == nil {
+			// 	} else {
+			// 		b.Fatal(call.Error)
+			// 	}
+			// }
+
+			return result.Success.Msg
+		},
+	)
+}
+
+func BenchmarkThrift_1K(b *testing.B) {
+	benchmarkEchoThrift(b, 1<<10)
+}
+
+func BenchmarkThrift_64K(b *testing.B) {
+	benchmarkEchoThrift(b, 64<<10)
 }
